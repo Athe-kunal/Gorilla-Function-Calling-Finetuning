@@ -12,15 +12,59 @@ from trl import setup_chat_format
 from peft import LoraConfig
 from transformers import TrainingArguments
 from trl import SFTTrainer
+import wandb
+from dotenv import load_dotenv,find_dotenv
+import os
+import argparse
 
-train_data = []
-with open('gorilla_openfunctions_v1_train.json', 'r') as file:
-    for line in file:
-        train_data.append(json.loads(line.strip()))
-# test_data = []
-with open('gorilla_openfunctions_v1_test.json', 'r') as file:
-    test_data = json.load(file)
+parser = argparse.ArgumentParser(
+                    prog='HF-Finetuning',
+                    description='Finetuning function calling models with HF')
 
+parser.add_argument("-dn","--dataset_name",help="Name of the dataset",default="gorilla")
+parser.add_argument("-nte","--num_train_epochs",help="Number of training epochs",default=3)
+parser.add_argument("-od","--output_dir",help="Output directory name")
+parser.add_argument("-rn","--run_name",help="Wandb run name")
+parser.add_argument("-msl","--max_seq_length",help="Maximum sequence length",default=3076)
+args = parser.parse_args()
+
+
+
+_ = load_dotenv(find_dotenv(),override=True)
+
+wandb.login(key=os.environ['WANDB_API_KEY'])
+system_message = """You are an text to python function translator. Users will ask you questions in English and you will generate a python function based on the provided FUNCTIONS.
+FUNCTIONS:
+{functions}"""
+if args.dataset_name == "gorilla":
+    train_data = []
+    with open('gorilla_openfunctions_v1_train.json', 'r') as file:
+        for line in file:
+            train_data.append(json.loads(line.strip()))
+    # test_data = []
+    with open('gorilla_openfunctions_v1_test.json', 'r') as file:
+        test_data = json.load(file)
+    def create_conversation(sample):
+        return {
+        "messages": [
+        {"role": "system", "content": system_message.format(functions=sample["Functions"])},
+        {"role": "user", "content": sample["Instruction"]},
+        {"role": "assistant", "content": sample["Output"]}
+        ]
+    }
+    def json_to_yaml(json_data):
+        for data in tqdm(json_data):
+            curr_func_yaml = ""
+            for func in data['Functions']:
+                curr_func_yaml+=yaml.dump(ast.literal_eval(func)) + "\n\n"
+            data.update({"yaml_function":curr_func_yaml})
+        return json_data
+
+    for td in train_data:
+        td['Output'] = td['Output'][0]
+
+    train_dataset = Dataset.from_pandas(pd.DataFrame(data=train_data))
+    train_dataset = train_dataset.map(create_conversation, remove_columns=train_dataset.features,batched=False)
 # def process_train_data(train_data):
 #     for td in train_data:
 #         output = td['Output']
@@ -45,31 +89,6 @@ with open('gorilla_openfunctions_v1_test.json', 'r') as file:
 # ### Question: {question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>
 # {output}<|eot_id|>
 # """
-system_message = """You are an text to python function translator. Users will ask you questions in English and you will generate a python function based on the provided FUNCTIONS.
-FUNCTIONS:
-{functions}"""
-
-def create_conversation(sample):
-    return {
-    "messages": [
-      {"role": "system", "content": system_message.format(functions=sample["Functions"])},
-      {"role": "user", "content": sample["Instruction"]},
-      {"role": "assistant", "content": sample["Output"]}
-    ]
-  }
-def json_to_yaml(json_data):
-    for data in tqdm(json_data):
-        curr_func_yaml = ""
-        for func in data['Functions']:
-            curr_func_yaml+=yaml.dump(ast.literal_eval(func)) + "\n\n"
-        data.update({"yaml_function":curr_func_yaml})
-    return json_data
-
-for td in train_data:
-    td['Output'] = td['Output'][0]
-
-train_dataset = Dataset.from_pandas(pd.DataFrame(data=train_data))
-train_dataset = train_dataset.map(create_conversation, remove_columns=train_dataset.features,batched=False)
 
 
 # train_dataset.to_json("train_dataset.json", orient="records")
@@ -99,17 +118,19 @@ from peft import LoraConfig
  
 # LoRA config based on QLoRA paper & Sebastian Raschka experiment
 peft_config = LoraConfig(
-        lora_alpha=32,
+        lora_alpha=128,
         lora_dropout=0.05,
         r=256,
         bias="none",
         target_modules="all-linear",
         task_type="CAUSAL_LM",
 )
-args = TrainingArguments(
-    output_dir="mistral-7B-v1-gorilla", # directory to save and repository id
-    num_train_epochs=3,                     # number of training epochs
+
+training_args = TrainingArguments(
+    output_dir=args.output_dir, # directory to save and repository id
+    num_train_epochs=args.num_train_epochs,                     # number of training epochs
     per_device_train_batch_size=2,          # batch size per device during training
+    per_device_eval_batch_size=2,          # batch size per device during training
     gradient_accumulation_steps=2,          # number of steps before performing a backward/update pass
     gradient_checkpointing=True,            # use gradient checkpointing to save memory
     optim="adamw_torch_fused",              # use fused adamw optimizer
@@ -122,15 +143,16 @@ args = TrainingArguments(
     warmup_ratio=0.03,                      # warmup ratio based on QLoRA paper
     lr_scheduler_type="cosine",           # use constant learning rate scheduler
     push_to_hub=False,                       # push model to hub
-    report_to="tensorboard",                # report metrics to tensorboard
+    report_to="wandb",                
+    run_name=args.run_name
 )
 
 
-max_seq_length = 3076 # max sequence length for model and packing of the dataset
+max_seq_length = args.max_seq_length # max sequence length for model and packing of the dataset
  
 trainer = SFTTrainer(
     model=model,
-    args=args,
+    args=training_args,
     train_dataset=train_dataset,
     peft_config=peft_config,
     max_seq_length=max_seq_length,
@@ -147,3 +169,8 @@ trainer.train()
  
 # save model
 trainer.save_model()
+
+# free the memory again
+del model
+del trainer
+torch.cuda.empty_cache()
