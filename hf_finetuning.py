@@ -36,6 +36,10 @@ wandb.login(key=os.environ['WANDB_API_KEY'])
 system_message = """You are an text to python function translator. Users will ask you questions in English and you will generate a python function based on the provided FUNCTIONS.
 FUNCTIONS:
 {functions}"""
+if args.yaml_or_json == "yaml":
+    function_col = "yaml_function"
+else:
+    function_col = "Functions"
 if args.dataset_name == "gorilla":
     train_data = []
     with open('gorilla_openfunctions_v1_train.json', 'r') as file:
@@ -44,14 +48,6 @@ if args.dataset_name == "gorilla":
     # test_data = []
     with open('gorilla_openfunctions_v1_test.json', 'r') as file:
         test_data = json.load(file)
-    def create_conversation(sample):
-        return {
-        "messages": [
-        {"role": "system", "content": system_message.format(functions=sample["Functions"])},
-        {"role": "user", "content": sample["Instruction"]},
-        {"role": "assistant", "content": sample["Output"]}
-        ]
-    }
     def json_to_yaml(json_data):
         for data in tqdm(json_data):
             curr_func_yaml = ""
@@ -59,10 +55,18 @@ if args.dataset_name == "gorilla":
                 curr_func_yaml+=yaml.dump(ast.literal_eval(func)) + "\n\n"
             data.update({"yaml_function":curr_func_yaml})
         return json_data
-
+    train_data = json_to_yaml(train_data)
     for td in train_data:
         td['Output'] = td['Output'][0]
-
+    def create_conversation(sample):
+        return {
+        "messages": [
+        {"role": "system", "content": system_message.format(functions=sample[function_col])},
+        {"role": "user", "content": sample["Instruction"]},
+        {"role": "assistant", "content": sample["Output"]}
+        ]
+    }
+    
     train_dataset = Dataset.from_pandas(pd.DataFrame(data=train_data))
     train_dataset = train_dataset.map(create_conversation, remove_columns=train_dataset.features,batched=False)
 # def process_train_data(train_data):
