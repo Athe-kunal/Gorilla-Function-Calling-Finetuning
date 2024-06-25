@@ -132,7 +132,7 @@ peft_config = LoraConfig(
 
 training_args = TrainingArguments(
     output_dir=args.output_dir, # directory to save and repository id
-    num_train_epochs=args.num_train_epochs,                     # number of training epochs
+    num_train_epochs=int(float(args.num_train_epochs)),                     # number of training epochs
     per_device_train_batch_size=2,          # batch size per device during training
     per_device_eval_batch_size=2,          # batch size per device during training
     gradient_accumulation_steps=2,          # number of steps before performing a backward/update pass
